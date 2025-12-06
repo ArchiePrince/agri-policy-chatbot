@@ -1,0 +1,29 @@
+# Core ML/LLM
+langchain
+langchain-community
+langchain-openai
+langchain-qdrant
+openai
+
+# Vector Database & Embeddings
+qdrant-client
+chromadb
+sentence-transformers
+
+# Web & API
+fastapi
+uvicorn
+streamlit
+beautifulsoup4
+requests
+
+# Data Processing
+pandas
+pypdf
+python-docx
+markdown
+
+# Utilities
+python-dotenv
+loguru
+tqdm
