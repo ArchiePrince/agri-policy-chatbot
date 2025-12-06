@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """
-Extract policy instruments from Agricultural Policy Toolkit documents
+Extract policy instruments from Agricultural Policy Toolkit PDF documents
 """
 
 import argparse
 import logging
 import sys
-from pathlib import Path
 import json
+from pathlib import Path
 
 # Add src to path
 sys.path.append(str(Path(__file__).parent.parent))
 
-from src.data.policy_extractor import PolicyInstrumentExtractor, BatchPolicyExtractor
+from src.data.pdf_extractor import PDFPolicyExtractor, BatchPDFExtractor
 
 def setup_logging(log_level: str = "INFO"):
     """Configure logging"""
@@ -27,48 +27,59 @@ def setup_logging(log_level: str = "INFO"):
         ]
     )
 
-def extract_single_file(file_path: str, output_dir: str = "data/processed"):
-    """Extract single policy instrument file"""
-    extractor = PolicyInstrumentExtractor()
+def extract_single_pdf(pdf_path: str, output_dir: str = "data/processed", use_pdfminer: bool = False) -> dict:
+    """Extract single policy instrument from PDF"""
+    extractor = PDFPolicyExtractor(use_pdfminer=use_pdfminer)
     
-    with open(file_path, 'r', encoding='utf-8') as f:
-        content = f.read()
+    print(f"📄 Processing PDF: {pdf_path}")
     
-    instrument = extractor.extract_from_text(content, file_path)
-    
-    # Save individual instrument
-    output_path = Path(output_dir) / f"{instrument.instrument_id}.json"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    with open(output_path, 'w', encoding='utf-8') as f:
-        json.dump(instrument.to_dict(), f, indent=2, ensure_ascii=False)
-    
-    print(f"\n✅ Extracted instrument: {instrument.instrument_name}")
-    print(f"   ID: {instrument.instrument_id}")
-    print(f"   URL: {instrument.url}")
-    print(f"   Saved to: {output_path}")
-    
-    # Print summary
-    print(f"\n📊 Summary:")
-    print(f"   Objectives: {len(instrument.policy_objectives)}")
-    print(f"   Ministries: {', '.join(instrument.ministries_involved)}")
-    print(f"   Budget: {instrument.required_budget}")
-    print(f"   Horizon: {', '.join([h.value for h in instrument.impact_horizon])}")
-    
-    return instrument
+    try:
+        instrument = extractor.extract_from_pdf(pdf_path)
+        
+        if not instrument:
+            print(f"❌ Failed to extract instrument from {pdf_path}")
+            return None
+        
+        # Save individual instrument
+        output_path = Path(output_dir) / f"{instrument.instrument_id}.json"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(instrument.to_dict(), f, indent=2, ensure_ascii=False)
+        
+        print(f"\n✅ Successfully extracted: {instrument.instrument_name}")
+        print(f"   ID: {instrument.instrument_id}")
+        print(f"   URL: {instrument.url}")
+        print(f"   Confidence: {instrument.confidence_score}")
+        print(f"   Saved to: {output_path}")
+        
+        # Print summary
+        print(f"\n📊 Summary:")
+        print(f"   Objectives: {len(instrument.policy_objectives)}")
+        print(f"   Ministries: {', '.join(instrument.ministries_involved[:3])}{'...' if len(instrument.ministries_involved) > 3 else ''}")
+        print(f"   Budget: {instrument.required_budget}")
+        print(f"   Horizon: {', '.join([h.value for h in instrument.impact_horizon])}")
+        print(f"   Categories: {', '.join(instrument.categories[:3])}{'...' if len(instrument.categories) > 3 else ''}")
+        
+        return instrument.to_dict()
+        
+    except Exception as e:
+        print(f"❌ Error extracting from {pdf_path}: {e}")
+        logging.error(f"Error extracting from {pdf_path}: {e}", exc_info=True)
+        return None
 
-def extract_batch(input_dir: str, output_dir: str = "data/processed"):
-    """Extract all policy instruments from a directory"""
-    batch_extractor = BatchPolicyExtractor()
+def extract_batch_pdfs(input_dir: str, output_dir: str = "data/processed", use_pdfminer: bool = False) -> dict:
+    """Extract all policy instruments from PDFs in a directory"""
+    batch_extractor = BatchPDFExtractor(PDFPolicyExtractor(use_pdfminer=use_pdfminer))
     
     print(f"🔍 Processing directory: {input_dir}")
     
-    # Process all text files
-    instruments = batch_extractor.process_directory(input_dir, "*.txt")
+    # Process all PDF files
+    instruments = batch_extractor.process_directory(input_dir, "*.pdf")
     
     if not instruments:
         print("❌ No instruments extracted")
-        return
+        return None
     
     # Save to JSON
     json_path = Path(output_dir) / "policy_instruments.json"
@@ -79,74 +90,109 @@ def extract_batch(input_dir: str, output_dir: str = "data/processed"):
     batch_extractor.save_to_jsonl(str(jsonl_path))
     
     # Generate statistics
-    stats = generate_statistics(instruments)
+    stats = generate_statistics(instruments, batch_extractor.get_statistics())
     stats_path = Path(output_dir) / "extraction_statistics.json"
     
     with open(stats_path, 'w') as f:
         json.dump(stats, f, indent=2)
     
     print(f"\n🎉 Batch extraction complete!")
-    print(f"   Instruments extracted: {stats['total_instruments']}")
+    print(f"   Instruments extracted: {len(instruments)}")
+    print(f"   Success rate: {batch_extractor.get_statistics()['success_rate']:.1%}")
     print(f"   JSON output: {json_path}")
     print(f"   JSONL output: {jsonl_path}")
     print(f"   Statistics: {stats_path}")
     
-    return instruments
+    # Show sample
+    if instruments:
+        print(f"\n📄 Sample instrument (first of {len(instruments)}):")
+        sample = instruments[0].to_dict()
+        # Don't print full description to keep output clean
+        sample_without_desc = {k: v for k, v in sample.items() if k not in ['description', 'metadata']}
+        print(json.dumps(sample_without_desc, indent=2))
+    
+    return {
+        "instruments": [i.to_dict() for i in instruments],
+        "statistics": stats,
+        "output_files": {
+            "json": str(json_path),
+            "jsonl": str(jsonl_path),
+            "stats": str(stats_path)
+        }
+    }
 
-def generate_statistics(instruments):
+def generate_statistics(instruments, extraction_stats):
     """Generate extraction statistics"""
     stats = {
-        'total_instruments': len(instruments),
-        'by_budget': {},
-        'by_impact_horizon': {},
+        'extraction': extraction_stats,
+        'instruments': {
+            'total': len(instruments),
+            'by_budget': {},
+            'by_impact_horizon': {},
+            'by_category': {},
+            'confidence_distribution': {
+                'high': 0,
+                'medium': 0,
+                'low': 0
+            }
+        },
         'common_ministries': {},
-        'common_objectives': {},
-        'instrument_types': set()
+        'common_objectives': {}
     }
     
     all_objectives = []
+    all_ministries = []
     
     for instrument in instruments:
         # Budget distribution
         budget = instrument.required_budget.value if hasattr(instrument.required_budget, 'value') else instrument.required_budget
-        stats['by_budget'][budget] = stats['by_budget'].get(budget, 0) + 1
+        stats['instruments']['by_budget'][budget] = stats['instruments']['by_budget'].get(budget, 0) + 1
         
         # Impact horizon
         for horizon in instrument.impact_horizon:
             horizon_val = horizon.value if hasattr(horizon, 'value') else horizon
-            stats['by_impact_horizon'][horizon_val] = stats['by_impact_horizon'].get(horizon_val, 0) + 1
+            stats['instruments']['by_impact_horizon'][horizon_val] = stats['instruments']['by_impact_horizon'].get(horizon_val, 0) + 1
+        
+        # Categories
+        for category in instrument.categories:
+            stats['instruments']['by_category'][category] = stats['instruments']['by_category'].get(category, 0) + 1
+        
+        # Confidence distribution
+        if instrument.confidence_score >= 0.7:
+            stats['instruments']['confidence_distribution']['high'] += 1
+        elif instrument.confidence_score >= 0.4:
+            stats['instruments']['confidence_distribution']['medium'] += 1
+        else:
+            stats['instruments']['confidence_distribution']['low'] += 1
         
         # Ministries
-        for ministry in instrument.ministries_involved:
-            stats['common_ministries'][ministry] = stats['common_ministries'].get(ministry, 0) + 1
+        all_ministries.extend(instrument.ministries_involved)
         
         # Objectives
         all_objectives.extend(instrument.policy_objectives)
-        
-        # Instrument types (from name)
-        stats['instrument_types'].add(instrument.instrument_name.split()[0].lower() if instrument.instrument_name else 'unknown')
+    
+    # Count ministries
+    from collections import Counter
+    ministry_counts = Counter(all_ministries)
+    stats['common_ministries'] = dict(ministry_counts.most_common(10))
     
     # Count objectives
-    from collections import Counter
     objective_counts = Counter(all_objectives)
     stats['common_objectives'] = dict(objective_counts.most_common(10))
-    
-    # Convert set to list
-    stats['instrument_types'] = list(stats['instrument_types'])
     
     return stats
 
 def main():
     """Main function"""
     parser = argparse.ArgumentParser(
-        description='Extract policy instruments from Agricultural Policy Toolkit documents'
+        description='Extract policy instruments from Agricultural Policy Toolkit PDF documents'
     )
     
     parser.add_argument(
         '--input',
         type=str,
         required=True,
-        help='Input file or directory'
+        help='Input PDF file or directory'
     )
     
     parser.add_argument(
@@ -172,6 +218,12 @@ def main():
         help='Logging level'
     )
     
+    parser.add_argument(
+        '--use-pdfminer',
+        action='store_true',
+        help='Use pdfminer instead of pdfplumber (slower but more accurate for complex layouts)'
+    )
+    
     args = parser.parse_args()
     
     # Setup logging
@@ -180,36 +232,58 @@ def main():
     
     # Create output directory
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+    Path('logs').mkdir(exist_ok=True)
     
     input_path = Path(args.input)
     
     try:
-        if args.mode == 'single' and input_path.is_file():
-            print(f"📄 Processing single file: {input_path}")
-            instrument = extract_single_file(str(input_path), args.output_dir)
+        if args.mode == 'single' and input_path.is_file() and input_path.suffix.lower() == '.pdf':
+            print(f"📄 Processing single PDF: {input_path}")
             
-            # Print instrument details
-            print(f"\n📋 Full instrument details:")
-            print(json.dumps(instrument.to_dict(), indent=2, ensure_ascii=False))
+            if not input_path.exists():
+                print(f"❌ PDF file not found: {input_path}")
+                sys.exit(1)
+            
+            result = extract_single_pdf(str(input_path), args.output_dir, args.use_pdfminer)
+            
+            if result:
+                print(f"\n📋 Full instrument details available in: {args.output_dir}/{result.get('instrument_id', 'unknown')}.json")
+            else:
+                print(f"\n❌ Extraction failed for {input_path}")
+                sys.exit(1)
             
         elif args.mode == 'batch' and input_path.is_dir():
             print(f"📁 Processing directory: {input_path}")
-            instruments = extract_batch(str(input_path), args.output_dir)
             
-            if instruments:
-                # Print sample
-                print(f"\n📄 Sample instrument (first of {len(instruments)}):")
-                sample = instruments[0].to_dict()
-                print(json.dumps({k: v for k, v in sample.items() if k != 'description'}, indent=2))
+            if not input_path.exists():
+                print(f"❌ Directory not found: {input_path}")
+                sys.exit(1)
+            
+            # Check for PDF files
+            pdf_files = list(input_path.glob("*.pdf")) + list(input_path.glob("*.PDF"))
+            if not pdf_files:
+                print(f"❌ No PDF files found in {input_path}")
+                print(f"   Supported extensions: .pdf, .PDF")
+                sys.exit(1)
+            
+            print(f"   Found {len(pdf_files)} PDF files")
+            
+            result = extract_batch_pdfs(str(input_path), args.output_dir, args.use_pdfminer)
+            
+            if not result:
+                print(f"\n❌ Batch extraction failed or no instruments extracted")
+                sys.exit(1)
                 
         else:
             print(f"❌ Invalid input: {args.input}")
-            print(f"   For single file mode, provide a file path")
-            print(f"   For batch mode, provide a directory path")
+            print(f"   For single file mode, provide a PDF file (.pdf)")
+            print(f"   For batch mode, provide a directory containing PDF files")
             sys.exit(1)
             
     except Exception as e:
-        logger.error(f"Extraction failed: {e}")
+        logger.error(f"Extraction failed: {e}", exc_info=True)
+        print(f"\n❌ Extraction failed with error: {e}")
+        print("Check logs/policy_extraction.log for details")
         sys.exit(1)
 
 if __name__ == "__main__":
