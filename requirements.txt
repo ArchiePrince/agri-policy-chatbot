@@ -23,6 +23,9 @@ pypdf
 python-docx
 markdown
 chardet
+pdfplumber
+PyPDF2
+pdfminer.six
 
 # Utilities
 python-dotenv
