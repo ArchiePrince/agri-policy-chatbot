@@ -22,6 +22,7 @@ pandas
 pypdf
 python-docx
 markdown
+chardet
 
 # Utilities
 python-dotenv
